@@ -21,9 +21,6 @@
 	"scripts": {
 		"test": "bun test"
 	},
-	"engines": {
-		"bun": ">=1.1.0"
-	},
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": "*"
 	}
