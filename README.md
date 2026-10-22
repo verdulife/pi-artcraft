@@ -5,6 +5,10 @@ per app. `figcraft` and `vectorcraft` are toggles: turning one on opens the app 
 server confined to the session folder** and registers that app's **MCP server for this session only**;
 turning it off releases both, closing only the app this session opened.
 
+Every other action is its own flat command: `/<app>:on`, `/<app>:off`, `/<app>:open`, `/<app>:sync`,
+`/<app>:status`, `/<app>:root <dir>` and `/<app>:port <n>`. Pi reads a command name up to the first
+space, so a `:` in the name is enough and no command parses a verb.
+
 Nothing is written to `mcp.json`, so no server is ever on by default and none leaks into another
 project.
 
@@ -21,15 +25,34 @@ npm is not published yet; the package is ready for `npm publish` when it is.
 | Command | Effect |
 | --- | --- |
 | `/figcraft` | Toggle: off opens the app confined to `cwd` and attaches its MCP server; on releases both |
-| `/vectorcraft` | Same for VectorCraft |
-| `/<app> on` · `/<app> off` | Explicit forms of the toggle |
-| `/<app> config` | State, port, root and the two binaries in use |
-| `/<app> config root <dir>` | Automation root for the next start (refused while the app is on) |
-| `/<app> config port <n>` | Control port for the next start (refused while the app is on) |
+| `/figcraft:on` | Start: open the app and attach its MCP server; says so when it is already on |
+| `/figcraft:off` | Stop: release the MCP server, closing only the app this session opened |
+| `/figcraft:open` | Make the app answer on the configured port and root, then attach: attach if the port answers, launch if it does not |
+| `/figcraft:sync` | Reconcile this session with the running app (see below) |
+| `/figcraft:status` | State, port, root and the two binaries in use |
+| `/figcraft:root <dir>` | Automation root for the next start (refused while the app is on) |
+| `/figcraft:port <n>` | Control port for the next start (refused while the app is on) |
+| `/vectorcraft…` | The same eight commands for VectorCraft |
 
-The menu label states the action, not the state: `Start FigCraft: open the app confined to this
+Only the bare toggle accepts no arguments in a special way: it is the only command whose label
+changes. Every flat command takes the arguments its description names, and a stray argument is
+refused with a one-line usage note.
+
+`/<app>:sync` covers the four states a session can drift into:
+
+| What answers on the configured port | What this session has registered | What `:sync` does |
+| --- | --- | --- |
+| Yes | Nothing | Registers it and reports a reconnection |
+| Yes | A server | Re-registers it unchanged and reports that it is already in sync |
+| Nothing | A server | Releases the stale server and reports that the app is not running, suggesting `/<app>:open` |
+| Nothing | Nothing | Reports that the app is not running, suggesting `/<app>:open` |
+
+A registration never outlives the port it points at, so `active` is the single source of truth and
+no stale server survives a crashed app.
+
+The toggle menu label states the action, not the state: `Start FigCraft: open the app confined to this
 folder and attach its MCP server` while it is off, `Stop FigCraft: …` while it is on. The label is
-re-registered after every toggle.
+re-registered after every toggle; the flat commands carry static descriptions.
 
 Each session opens the app with:
 
@@ -37,7 +60,7 @@ Each session opens the app with:
 <app> --control <port> --automation-read-root <root> --automation-write-root <root>
 ```
 
-The roots are fixed when the app starts, which is why `root` and `port` are refused while it is on,
+The roots are fixed when the app starts, which is why `:root` and `:port` are refused while it is on,
 and why opening the app from the file explorer is not equivalent: its control server would have no
 confinement.
 
@@ -92,8 +115,8 @@ bun test
 ```
 
 The suite covers the launch/attach command lines, install discovery per platform, the toggle state
-machine (launch, attach to an existing app, readiness failure, double toggle, shutdown) and the prompt
-rules.
+machine (launch, attach to an existing app, readiness failure, double toggle, shutdown), the flat
+commands behind `:on`/`:off`/`:open`/`:sync`/`:status`/`:root`/`:port` and the prompt rules.
 
 ## License
 
