@@ -5,19 +5,24 @@
  * folder and registers the MCP server that attaches to it; turning it off releases the server and
  * closes only the app this session opened. Nothing is written to `mcp.json`.
  *
+ * The command label states the action it will perform next ("Start …" / "Stop …"), and it is
+ * re-registered after every toggle so the menu never describes a state instead of an action.
+ *
  * The package also publishes its operating rules: they are appended to the system prompt on every
  * model call, so a fresh session does not have to rediscover that the live app is the only way to
  * draw.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { CRAFT_APPS, type CraftAppId } from "./apps";
-import { createController } from "./controller";
+import { CRAFT_APPS, type CraftAppId, type CraftAppSpec } from "./apps";
+import { createController, type CraftController } from "./controller";
 import { createSystemHost } from "./host";
 
 export const RULES_SECTION = "artcraft";
 
 const GUI = "ArtCraft suite (FigCraft, VectorCraft)";
+
+const VERBS = ["on", "off", "status", "root", "port"];
 
 const GUIDELINE =
 	`${GUI}: draw only through the MCP tools of the live app opened by /figcraft or /vectorcraft; ` +
@@ -38,16 +43,8 @@ export default function craftExtension(pi: ExtensionAPI): void {
 		const app = CRAFT_APPS[id];
 		const controller = createController(createSystemHost(app, hooks));
 
-		pi.registerCommand(app.id, {
-			description: `Toggle the ${app.label} app and its MCP server for this session only`,
-			getArgumentCompletions: (prefix) => {
-				const verbs = ["on", "off", "status", "root", "port"].filter((verb) => verb.startsWith(prefix));
-				return verbs.length > 0 ? verbs.map((verb) => ({ value: verb, label: verb })) : null;
-			},
-			handler: async (args, ctx) => {
-				sessionContext = ctx;
-				await controller.handle(args);
-			},
+		registerToggle(pi, app, controller, (context) => {
+			sessionContext = context;
 		});
 
 		pi.on("session_shutdown", () => {
@@ -61,6 +58,35 @@ export default function craftExtension(pi: ExtensionAPI): void {
 		if (!options.promptGuidelines.includes(GUIDELINE)) options.promptGuidelines.push(GUIDELINE);
 		return undefined;
 	});
+}
+
+/**
+ * Registers `/app`, and re-registers it after each run so its description names the action the next
+ * invocation takes. `registerCommand` overwrites the entry and the command list is rebuilt per
+ * request, so the menu shows the new label without a reload.
+ */
+export function registerToggle(
+	pi: ExtensionAPI,
+	app: CraftAppSpec,
+	controller: CraftController,
+	rememberContext: (context: ExtensionCommandContext) => void,
+): void {
+	const definition = {
+		get description() {
+			return controller.describe();
+		},
+		getArgumentCompletions: (prefix: string) => {
+			const verbs = VERBS.filter((verb) => verb.startsWith(prefix));
+			return verbs.length > 0 ? verbs.map((verb) => ({ value: verb, label: verb })) : null;
+		},
+		handler: async (args: string, context: ExtensionCommandContext) => {
+			rememberContext(context);
+			await controller.handle(args);
+			pi.registerCommand(app.id, definition);
+		},
+	};
+
+	pi.registerCommand(app.id, definition);
 }
 
 /** The section this package contributes, generated from the app table so ports cannot drift. */

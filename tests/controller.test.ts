@@ -272,4 +272,32 @@ describe("per-app controller toggle", () => {
 		expect(fake.launched).toHaveLength(0);
 		expect(fake.registered).toHaveLength(0);
 	});
+
+	test("describe names the action the next toggle takes in each state", async () => {
+		const fake = fakeHost();
+		const controller = createController(fake.host);
+
+		expect(controller.describe()).toStartWith("Start FigCraft:");
+		expect(controller.describe()).toContain("confined to this folder");
+
+		await controller.handle("");
+
+		expect(controller.describe()).toStartWith("Stop FigCraft:");
+		expect(controller.describe()).toContain("close the app this session opened");
+
+		await controller.handle("");
+
+		expect(controller.describe()).toStartWith("Start FigCraft:");
+	});
+
+	test("describe says the app keeps running when we did not open it", async () => {
+		const fake = fakeHost();
+		fake.setListening(true);
+		const controller = createController(fake.host);
+
+		await controller.handle("");
+
+		expect(controller.describe()).toStartWith("Stop FigCraft:");
+		expect(controller.describe()).toContain("leave the app you opened running");
+	});
 });

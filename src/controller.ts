@@ -49,6 +49,8 @@ export interface CraftController {
 	handle(args: string): Promise<void>;
 	shutdown(): void;
 	status(): string;
+	/** What `/app` will do right now, for the command menu. */
+	describe(): string;
 }
 
 /** Readiness budget: 60 attempts of 500 ms, far above the half second both apps need here. */
@@ -158,6 +160,15 @@ export function createController(host: CraftHost): CraftController {
 			: `${app.label} MCP is on: attached to the app on port ${active.port}`;
 	}
 
+	/** The menu label states the action, so `/app` never reads like a report of the current state. */
+	function describe(): string {
+		if (!active) return `Start ${app.label}: open the app confined to this folder and attach its MCP server`;
+
+		return active.launched
+			? `Stop ${app.label}: release its MCP server and close the app this session opened`
+			: `Stop ${app.label}: release its MCP server and leave the app you opened running`;
+	}
+
 	function setRoot(parameters: string[]): void {
 		if (parameters.length === 0) {
 			host.notify(`Automation root: ${resolveSessionRoot(rootOverride, host.cwd)}`, "info");
@@ -247,6 +258,7 @@ export function createController(host: CraftHost): CraftController {
 		handle,
 		shutdown: () => void stop(),
 		status,
+		describe,
 	};
 }
 

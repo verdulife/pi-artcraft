@@ -1,24 +1,42 @@
 /**
- * What the package registers, and the rules it publishes. The handlers are captured instead of run,
- * so no window opens during the suite.
+ * What the package registers, the action its command label states, and the rules it publishes.
+ * The handlers are captured instead of run against real binaries, so no window opens during the
+ * suite.
  */
 
 import { describe, expect, test } from "bun:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import craftExtension, { RULES_SECTION, rules } from "../src/extension";
+import { CRAFT_APPS } from "../src/apps";
+import type { CraftController } from "../src/controller";
+import craftExtension, { RULES_SECTION, registerToggle, rules } from "../src/extension";
+
+interface CommandDefinition {
+	description: string;
+	getArgumentCompletions: (prefix: string) => Array<{ value: string; label: string }> | null;
+	handler: (args: string, context: unknown) => Promise<void>;
+}
 
 interface Captured {
-	commands: Map<string, { description?: string; handler: (args: string, context: unknown) => Promise<void> }>;
+	commands: Map<string, CommandDefinition>;
 	servers: Map<string, unknown>;
 	handlers: Map<string, Array<(event: unknown, context?: unknown) => unknown>>;
 }
 
+/**
+ * Mirrors Pi: `extension.commands.set(name, { name, sourceInfo, ...options })` spreads the
+ * definition, so `description` is read once at registration time and a new action needs a new
+ * registration.
+ */
 function fakePi(): { api: ExtensionAPI; captured: Captured } {
 	const captured: Captured = { commands: new Map(), servers: new Map(), handlers: new Map() };
 
 	const api = {
-		registerCommand: (name: string, definition: Captured["commands"] extends Map<string, infer V> ? V : never) => {
-			captured.commands.set(name, definition);
+		registerCommand: (name: string, definition: CommandDefinition) => {
+			captured.commands.set(name, {
+				description: definition.description,
+				getArgumentCompletions: definition.getArgumentCompletions,
+				handler: definition.handler,
+			});
 		},
 		registerMcpServer: (name: string, config: unknown) => {
 			captured.servers.set(name, config);
@@ -33,6 +51,19 @@ function fakePi(): { api: ExtensionAPI; captured: Captured } {
 	};
 
 	return { api: api as unknown as ExtensionAPI, captured };
+}
+
+/** A controller whose state flips on the first handle(), so the label change is observable. */
+function stubController(): CraftController {
+	let active = false;
+	return {
+		async handle() {
+			active = !active;
+		},
+		shutdown() {},
+		status: () => (active ? "on" : "off"),
+		describe: () => (active ? "Stop FigCraft: release and close" : "Start FigCraft: open and attach"),
+	};
 }
 
 function promptOptions(): { sections: Record<string, string>; promptGuidelines: string[] } {
@@ -55,9 +86,15 @@ describe("the package registration", () => {
 		craftExtension(api);
 
 		expect([...captured.commands.keys()]).toEqual(["vectorcraft", "figcraft"]);
-		for (const definition of captured.commands.values()) {
-			expect(definition.description).toContain("Toggle");
-		}
+	});
+
+	test("the command label states the action it will take, not the current state", () => {
+		const { api, captured } = fakePi();
+
+		craftExtension(api);
+
+		expect(captured.commands.get("figcraft")?.description).toStartWith("Start FigCraft:");
+		expect(captured.commands.get("vectorcraft")?.description).toStartWith("Start VectorCraft:");
 	});
 
 	test("registers no MCP server until a toggle runs", () => {
@@ -74,6 +111,40 @@ describe("the package registration", () => {
 		craftExtension(api);
 
 		expect(captured.handlers.get("session_shutdown")).toHaveLength(2);
+	});
+});
+
+describe("the command label", () => {
+	test("switches to the stop action after a toggle", async () => {
+		const { api, captured } = fakePi();
+		const controller = stubController();
+		registerToggle(api, CRAFT_APPS.figcraft, controller, () => {});
+
+		expect(captured.commands.get("figcraft")?.description).toStartWith("Start FigCraft:");
+
+		await captured.commands.get("figcraft")?.handler("", {});
+
+		expect(captured.commands.get("figcraft")?.description).toStartWith("Stop FigCraft:");
+	});
+
+	test("switches back to the start action after turning the app off", async () => {
+		const { api, captured } = fakePi();
+		const controller = stubController();
+		registerToggle(api, CRAFT_APPS.figcraft, controller, () => {});
+
+		await captured.commands.get("figcraft")?.handler("", {});
+		await captured.commands.get("figcraft")?.handler("", {});
+
+		expect(captured.commands.get("figcraft")?.description).toStartWith("Start FigCraft:");
+	});
+
+	test("offers the verbs as argument completions", () => {
+		const { api, captured } = fakePi();
+		registerToggle(api, CRAFT_APPS.figcraft, stubController(), () => {});
+
+		const completions = captured.commands.get("figcraft")?.getArgumentCompletions("o");
+
+		expect(completions?.map((item) => item.value)).toEqual(["on", "off"]);
 	});
 });
 

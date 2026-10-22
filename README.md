@@ -27,6 +27,10 @@ npm is not published yet; the package is ready for `npm publish` when it is.
 | `/<app> root <dir>` | Automation root for the next start (refused while the app is on) |
 | `/<app> port <n>` | Control port for the next start (refused while the app is on) |
 
+The menu label states the action, not the state: `Start FigCraft: open the app confined to this
+folder and attach its MCP server` while it is off, `Stop FigCraft: …` while it is on. The label is
+re-registered after every toggle.
+
 Each session opens the app with:
 
 ```
