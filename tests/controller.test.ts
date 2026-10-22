@@ -1,6 +1,7 @@
 /**
- * The toggle: off opens the app with its control server confined to the session and registers the
- * MCP server; on releases both, closing only the app this controller opened.
+ * The per-app controller: the toggle opens the app with its control server confined to the session
+ * and registers the MCP server; the flat operations behind `:on`, `:off`, `:open`, `:sync`,
+ * `:status`, `:root` and `:port` each do one thing and report their own outcome.
  */
 
 import { mkdtempSync } from "node:fs";
@@ -36,7 +37,8 @@ function fakeHost(options: FakeOptions = {}): FakeHost {
 	const unregistered: string[] = [];
 	const launched: FakeHost["launched"] = [];
 	let listening = false;
-	let gate: (() => void) | undefined;
+	let gate: Promise<void> | undefined;
+	let openGate: (() => void) | undefined;
 
 	const host: CraftHost = {
 		app: CRAFT_APPS.figcraft,
@@ -65,7 +67,8 @@ function fakeHost(options: FakeOptions = {}): FakeHost {
 			};
 		},
 		isListening: async () => {
-			if (gate) await new Promise<void>((resolve) => (gate = resolve));
+			// A launched app answers only once the held readiness probe is released.
+			if (gate && launched.length > 0) await gate;
 			return listening;
 		},
 		delay: async () => {},
@@ -80,13 +83,14 @@ function fakeHost(options: FakeOptions = {}): FakeHost {
 		setListening: (value) => {
 			listening = value;
 		},
+		/** Holds the readiness probes of a launched app, as a control server that has not opened yet does. */
 		holdListening: () => {
-			let release: () => void = () => {};
-			const blocked = new Promise<void>((resolve) => (release = resolve));
+			gate = new Promise<void>((resolve) => {
+				openGate = resolve;
+			});
 			return () => {
 				gate = undefined;
-				void blocked;
-				release();
+				openGate?.();
 			};
 		},
 	};
@@ -96,7 +100,11 @@ function lastMessage(fake: FakeHost): string {
 	return fake.notifications.at(-1)?.message ?? "";
 }
 
-describe("per-app controller toggle", () => {
+function root(): string {
+	return mkdtempSync(join(tmpdir(), "artcraft-root-"));
+}
+
+describe("the toggle /figcraft", () => {
 	test("a bare toggle opens the app confined to the session and registers the MCP server", async () => {
 		const fake = fakeHost();
 		const controller = createController(fake.host);
@@ -143,7 +151,7 @@ describe("per-app controller toggle", () => {
 		expect(fake.registered).toHaveLength(1);
 		expect(lastMessage(fake)).toContain("attached to the app already listening on port 7980");
 
-		await controller.handle("off");
+		await controller.off();
 
 		expect(fake.unregistered).toEqual(["figcraft"]);
 		expect(lastMessage(fake)).toContain("keeps running");
@@ -174,18 +182,6 @@ describe("per-app controller toggle", () => {
 		expect(lastMessage(fake)).toContain("not found");
 	});
 
-	test("on twice reports the running server instead of opening a second app", async () => {
-		const fake = fakeHost();
-		const controller = createController(fake.host);
-
-		await controller.handle("on");
-		await controller.handle("on");
-
-		expect(fake.launched).toHaveLength(1);
-		expect(fake.registered).toHaveLength(1);
-		expect(lastMessage(fake)).toContain("already on");
-	});
-
 	test("a toggle while the first app is still starting does not open a second one", async () => {
 		const fake = fakeHost();
 		const release = fake.holdListening();
@@ -203,90 +199,53 @@ describe("per-app controller toggle", () => {
 		expect(fake.registered).toHaveLength(1);
 	});
 
-	test("root is refused while the app is on and used by the next launch when off", async () => {
-		const fake = fakeHost();
-		const controller = createController(fake.host);
-		const root = mkdtempSync(join(tmpdir(), "artcraft-root-"));
-
-		await controller.handle(`config root ${root}`);
-		await controller.handle("");
-
-		expect(fake.launched[0]?.args).toContain(root);
-
-		await controller.handle(`config root ${mkdtempSync(join(tmpdir(), "artcraft-other-"))}`);
-
-		expect(fake.notifications.at(-1)?.type).toBe("error");
-		expect(lastMessage(fake)).toContain("was fixed when it started");
-	});
-
-	test("port is validated, refused while on, and used by the next launch when off", async () => {
+	test("arguments typed after the toggle are refused with a usage note", async () => {
 		const fake = fakeHost();
 		const controller = createController(fake.host);
 
-		await controller.handle("config port 70000");
+		await controller.handle("on");
 
-		expect(fake.notifications.at(-1)?.type).toBe("error");
-		expect(lastMessage(fake)).toContain("between 1 and 65535");
+		expect(lastMessage(fake)).toStartWith("Usage: /figcraft");
+		expect(lastMessage(fake)).toContain("/figcraft:on");
+		expect(fake.notifications.at(-1)?.type).toBe("warning");
 		expect(fake.launched).toHaveLength(0);
-
-		await controller.handle("");
-		await controller.handle("config port 7999");
-
-		expect(lastMessage(fake)).toContain("was fixed when it started");
-
-		await controller.handle("off");
-		await controller.handle("config port 7999");
-		await controller.handle("");
-
-		expect(fake.launched[1]?.args).toContain("7999");
-		expect(fake.registered[1]?.args).toEqual(["mcp", "--attach", "7999"]);
-	});
-
-	test("config alone reports state, settings and the binaries in use", async () => {
-		const fake = fakeHost();
-		const controller = createController(fake.host);
-
-		await controller.handle("config");
-
-		const message = lastMessage(fake);
-		expect(message).toContain("is off");
-		expect(message).toContain("Port 7980");
-		expect(message).toContain(`root ${fake.host.cwd}`);
-		expect(message).toContain(INSTALL.app);
-		expect(message).toContain(INSTALL.cli);
 		expect(fake.registered).toHaveLength(0);
 	});
+});
 
-	test("config still reports settings when the app is not installed", async () => {
-		const fake = fakeHost({ missing: true });
-		const controller = createController(fake.host);
-
-		await controller.handle("config");
-
-		expect(lastMessage(fake)).toContain("Port 7980");
-		expect(lastMessage(fake)).toContain("not found");
-		expect(fake.notifications.at(-1)?.type).toBe("info");
-	});
-
-	test("an unknown config key prints its own usage", async () => {
+describe(":on and :off", () => {
+	test(":on twice reports the running server instead of opening a second app", async () => {
 		const fake = fakeHost();
 		const controller = createController(fake.host);
 
-		await controller.handle("config nope");
+		await controller.start();
+		await controller.start();
 
-		expect(lastMessage(fake)).toContain("Usage: /figcraft config");
-		expect(fake.notifications.at(-1)?.type).toBe("warning");
+		expect(fake.launched).toHaveLength(1);
+		expect(fake.registered).toHaveLength(1);
+		expect(lastMessage(fake)).toContain("already on");
 	});
 
-	test("an unknown verb prints the usage lines and changes nothing", async () => {
+	test(":off releases the server and closes only the app this session opened", async () => {
 		const fake = fakeHost();
 		const controller = createController(fake.host);
 
-		await controller.handle("nonsense");
+		await controller.start();
+		await controller.off();
 
-		expect(lastMessage(fake)).toContain("Usage: /figcraft");
-		expect(fake.notifications.at(-1)?.type).toBe("warning");
-		expect(fake.registered).toHaveLength(0);
+		expect(fake.unregistered).toEqual(["figcraft"]);
+		expect(fake.launched[0]?.closed).toBe(true);
+		expect(lastMessage(fake)).toContain("was closed");
+	});
+
+	test(":off while nothing is on reports that it was already off", async () => {
+		const fake = fakeHost();
+		const controller = createController(fake.host);
+
+		await controller.off();
+
+		expect(fake.unregistered).toEqual([]);
+		expect(lastMessage(fake)).toContain("already off");
 	});
 
 	test("shutdown releases the server and closes the app it opened", async () => {
@@ -299,8 +258,237 @@ describe("per-app controller toggle", () => {
 		expect(fake.unregistered).toEqual(["figcraft"]);
 		expect(fake.launched[0]?.closed).toBe(true);
 	});
+});
 
-	test("status describes the off state without touching the server", () => {
+describe(":open", () => {
+	test("relaunches the app with the configured port and root after it died", async () => {
+		const fake = fakeHost();
+		const controller = createController(fake.host);
+		const configuredRoot = root();
+
+		await controller.setRoot(configuredRoot);
+		await controller.setPort("7999");
+		await controller.start();
+
+		expect(fake.launched[0]?.args).toContain(configuredRoot);
+
+		// The app we opened went away: its port answers nothing but the registration is still there.
+		fake.setListening(false);
+		await controller.ensureRunning();
+
+		expect(fake.unregistered).toEqual(["figcraft"]);
+		expect(fake.launched).toHaveLength(2);
+		expect(fake.launched[1]?.args).toEqual([
+			"--control",
+			"7999",
+			"--automation-read-root",
+			configuredRoot,
+			"--automation-write-root",
+			configuredRoot,
+		]);
+		expect(fake.launched[1]?.closed).toBe(false);
+		expect(fake.registered).toHaveLength(2);
+		expect(fake.registered[1]?.args).toEqual(["mcp", "--attach", "7999"]);
+		expect(lastMessage(fake)).toContain("opened the app on port 7999");
+	});
+
+	test("registers the app that already answers without launching or closing it", async () => {
+		const fake = fakeHost();
+		fake.setListening(true);
+		const controller = createController(fake.host);
+
+		await controller.ensureRunning();
+
+		expect(fake.launched).toHaveLength(0);
+		expect(fake.registered).toHaveLength(1);
+		expect(fake.registered[0]?.args).toEqual(["mcp", "--attach", "7980"]);
+		expect(lastMessage(fake)).toContain("attached to the app already listening on port 7980");
+	});
+
+	test("reports that it is already up when the app answers and is registered", async () => {
+		const fake = fakeHost();
+		const controller = createController(fake.host);
+
+		await controller.start();
+		await controller.ensureRunning();
+
+		expect(fake.launched).toHaveLength(1);
+		expect(fake.registered).toHaveLength(1);
+		expect(fake.unregistered).toEqual([]);
+		expect(lastMessage(fake)).toContain("already up");
+	});
+
+	test("reports the readiness failure without leaving a registration behind", async () => {
+		const fake = fakeHost({ listenOnLaunch: false });
+		const controller = createController(fake.host);
+
+		await controller.ensureRunning();
+
+		expect(fake.registered).toHaveLength(0);
+		expect(fake.launched[0]?.closed).toBe(true);
+		expect(fake.notifications.at(-1)?.type).toBe("error");
+	});
+});
+
+describe(":sync", () => {
+	test("registers and reports a reconnection when the app answers and nothing is registered", async () => {
+		const fake = fakeHost();
+		fake.setListening(true);
+		const controller = createController(fake.host);
+
+		await controller.resync();
+
+		expect(fake.launched).toHaveLength(0);
+		expect(fake.registered).toHaveLength(1);
+		expect(fake.registered[0]?.args).toEqual(["mcp", "--attach", "7980"]);
+		expect(fake.unregistered).toEqual([]);
+		expect(lastMessage(fake)).toContain("reconnected");
+	});
+
+	test("re-registers idempotently and reports it is already in sync", async () => {
+		const fake = fakeHost();
+		const controller = createController(fake.host);
+
+		await controller.start();
+		await controller.resync();
+
+		expect(fake.launched).toHaveLength(1);
+		expect(fake.registered).toHaveLength(2);
+		expect(fake.registered[1]?.args).toEqual(["mcp", "--attach", "7980"]);
+		expect(fake.unregistered).toEqual([]);
+		expect(lastMessage(fake)).toContain("already in sync");
+	});
+
+	test("releases the stale server and suggests :open when nothing answers but a registration exists", async () => {
+		const fake = fakeHost();
+		const controller = createController(fake.host);
+
+		await controller.start();
+		fake.setListening(false);
+		await controller.resync();
+
+		expect(fake.unregistered).toEqual(["figcraft"]);
+		expect(fake.launched[0]?.closed).toBe(true);
+		expect(fake.registered).toHaveLength(1);
+		expect(lastMessage(fake)).toContain("not running");
+		expect(lastMessage(fake)).toContain("/figcraft:open");
+		expect(lastMessage(fake)).not.toContain("reconnected");
+		expect(controller.status()).toContain("is off");
+	});
+
+	test("reports that the app is not running and suggests :open when nothing answers and nothing is registered", async () => {
+		const fake = fakeHost();
+		const controller = createController(fake.host);
+
+		await controller.resync();
+
+		expect(fake.launched).toHaveLength(0);
+		expect(fake.registered).toHaveLength(0);
+		expect(fake.unregistered).toEqual([]);
+		expect(lastMessage(fake)).toContain("not running");
+		expect(lastMessage(fake)).toContain("/figcraft:open");
+	});
+});
+
+describe(":root and :port", () => {
+	test("root is used by the next launch and refused while the app is on", async () => {
+		const fake = fakeHost();
+		const controller = createController(fake.host);
+		const configured = root();
+
+		await controller.setRoot(configured);
+		await controller.start();
+
+		expect(fake.launched[0]?.args).toContain(configured);
+
+		await controller.setRoot(root());
+
+		expect(fake.notifications.at(-1)?.type).toBe("error");
+		expect(lastMessage(fake)).toContain("was fixed when it started");
+		expect(lastMessage(fake)).toContain("/figcraft:off");
+	});
+
+	test("root without a directory prints its own usage and changes nothing", async () => {
+		const fake = fakeHost();
+		const controller = createController(fake.host);
+
+		await controller.setRoot(undefined);
+
+		expect(lastMessage(fake)).toContain("Usage: /figcraft:root <dir>");
+		expect(fake.notifications.at(-1)?.type).toBe("warning");
+		expect(fake.launched).toHaveLength(0);
+	});
+
+	test("root refuses a folder that does not exist", async () => {
+		const fake = fakeHost();
+		const controller = createController(fake.host);
+
+		await controller.setRoot(join(fake.host.cwd, "missing-folder"));
+
+		expect(fake.notifications.at(-1)?.type).toBe("error");
+		expect(lastMessage(fake)).toContain("existing folder");
+	});
+
+	test("port is validated, refused while on, and used by the next launch when off", async () => {
+		const fake = fakeHost();
+		const controller = createController(fake.host);
+
+		await controller.setPort("70000");
+
+		expect(fake.notifications.at(-1)?.type).toBe("error");
+		expect(lastMessage(fake)).toContain("between 1 and 65535");
+		expect(fake.launched).toHaveLength(0);
+
+		await controller.start();
+		await controller.setPort("7999");
+
+		expect(lastMessage(fake)).toContain("was fixed when it started");
+
+		await controller.off();
+		await controller.setPort("7999");
+		await controller.start();
+
+		expect(fake.launched[1]?.args).toContain("7999");
+		expect(fake.registered[1]?.args).toEqual(["mcp", "--attach", "7999"]);
+	});
+
+	test("port without a number prints its own usage", async () => {
+		const fake = fakeHost();
+		const controller = createController(fake.host);
+
+		await controller.setPort(undefined);
+
+		expect(lastMessage(fake)).toContain("Usage: /figcraft:port <n>");
+		expect(fake.notifications.at(-1)?.type).toBe("warning");
+	});
+});
+
+describe(":status", () => {
+	test("reports state, settings and the binaries in use", async () => {
+		const fake = fakeHost();
+		const controller = createController(fake.host);
+
+		const message = controller.status();
+
+		expect(message).toContain("is off");
+		expect(message).toContain("Port 7980");
+		expect(message).toContain(`root ${fake.host.cwd}`);
+		expect(message).toContain(INSTALL.app);
+		expect(message).toContain(INSTALL.cli);
+		expect(fake.registered).toHaveLength(0);
+	});
+
+	test("still reports the settings when the app is not installed", async () => {
+		const fake = fakeHost({ missing: true });
+		const controller = createController(fake.host);
+
+		const message = controller.status();
+
+		expect(message).toContain("Port 7980");
+		expect(message).toContain("not found");
+	});
+
+	test("describes the off state without touching the server", () => {
 		const fake = fakeHost();
 		const controller = createController(fake.host);
 
@@ -308,8 +496,10 @@ describe("per-app controller toggle", () => {
 		expect(fake.launched).toHaveLength(0);
 		expect(fake.registered).toHaveLength(0);
 	});
+});
 
-	test("describe names the action the next toggle takes in each state", async () => {
+describe("the toggle label", () => {
+	test("names the action the next toggle takes in each state", async () => {
 		const fake = fakeHost();
 		const controller = createController(fake.host);
 
@@ -326,7 +516,7 @@ describe("per-app controller toggle", () => {
 		expect(controller.describe()).toStartWith("Start FigCraft:");
 	});
 
-	test("describe says the app keeps running when we did not open it", async () => {
+	test("says the app keeps running when we did not open it", async () => {
 		const fake = fakeHost();
 		fake.setListening(true);
 		const controller = createController(fake.host);

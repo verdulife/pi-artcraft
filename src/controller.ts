@@ -1,10 +1,17 @@
 /**
- * Session-scoped toggle for one app: its MCP server plus the app process that serves it.
+ * One app of the ArtCraft suite: its MCP server plus the app process that serves it.
  *
- * The automation roots of a running app are fixed when it starts, so turning the toggle on opens the
- * app through `buildLaunch` and turning it off closes only the app this controller opened. Everything
- * the process and the network need sits behind a small host interface, so the logic runs in tests with
- * no window, no port and no Pi session.
+ * `/app` is the toggle. The flat commands around it (`:on`, `:off`, `:open`, `:sync`, `:status`,
+ * `:root`, `:port`) are separate Pi commands, each mapped to one operation here, so nothing has to
+ * parse a verb out of an argument string.
+ *
+ * The automation roots of a running app are fixed when it starts, so the controller opens the app
+ * through `buildLaunch` and closes only the app it opened itself. `active` is the single source of
+ * truth for registration: a registration never outlives the port it points at, except while a launch
+ * is in flight.
+ *
+ * Everything the process and the network need sits behind a small host interface, so the logic runs
+ * in tests with no window, no port and no Pi session.
  */
 
 import {
@@ -46,11 +53,25 @@ export interface CraftHost {
 }
 
 export interface CraftController {
+	/** `/app` with no arguments: the toggle. Anything else is refused with a usage note. */
 	handle(args: string): Promise<void>;
-	shutdown(): void;
+	/** `/app:on`: start and attach, or report that it is already on. */
+	start(): Promise<void>;
+	/** `/app:off`: release the server and close only the app this session opened. */
+	off(): Promise<void>;
+	/** `/app:open`: make the configured port and root answer, then attach. */
+	ensureRunning(): Promise<void>;
+	/** `/app:sync`: reconcile this session with what is actually running. */
+	resync(): Promise<void>;
+	/** `/app:status`: state, port, root and the two binaries in use. */
 	status(): string;
+	/** `/app:root <dir>`: the automation root for the next start. */
+	setRoot(argument: string | undefined): Promise<void>;
+	/** `/app:port <n>`: the control port for the next start. */
+	setPort(argument: string | undefined): Promise<void>;
 	/** What `/app` will do right now, for the command menu. */
 	describe(): string;
+	shutdown(): void;
 }
 
 /** Readiness budget: 60 attempts of 500 ms, far above the half second both apps need here. */
@@ -71,9 +92,15 @@ export function createController(host: CraftHost): CraftController {
 	let port = app.defaultPort;
 	let starting = false;
 
-	const usage = `Usage: /${app.id} [on | off | config [root <dir> | port <n>]] — no argument toggles`;
+	const usage =
+		`Usage: /${app.id} takes no arguments; use /${app.id}:on, /${app.id}:off, ` +
+		`/${app.id}:open, /${app.id}:sync, /${app.id}:status, /${app.id}:root <dir> or /${app.id}:port <n>`;
 
-	function register(install: AppInstall, target: number, root: string, launched?: CraftApp): void {
+	/**
+	 * Records the registration for `target`. A registration that cannot be made closes the app we
+	 * just opened, so `active` never describes a server Pi does not know about.
+	 */
+	function attach(install: AppInstall, target: number, root: string, launched?: CraftApp): void {
 		try {
 			host.registerMcpServer(app.id, buildAttachConfig(app, install, target));
 		} catch (error) {
@@ -82,12 +109,22 @@ export function createController(host: CraftHost): CraftController {
 		}
 
 		active = { port: target, root, launched };
-		host.notify(
-			launched
-				? `${app.label} MCP on: opened the app on port ${target}, confined to ${root}`
-				: `${app.label} MCP on: attached to the app already listening on port ${target} (its automation roots were fixed when it started)`,
-			"info",
-		);
+	}
+
+	/** Drops the registration for a port nothing answers, closing the app if we opened it. */
+	function release(): ActiveServer | undefined {
+		const current = active;
+		if (!current) return undefined;
+
+		try {
+			host.unregisterMcpServer(app.id);
+		} catch {
+			// Already released by session teardown.
+		}
+
+		active = undefined;
+		current.launched?.close();
+		return current;
 	}
 
 	async function waitForPort(target: number): Promise<boolean> {
@@ -99,9 +136,38 @@ export function createController(host: CraftHost): CraftController {
 		return false;
 	}
 
+	/** Opens the app with `root` and `target`, waits for its control server, then registers it. */
+	async function launchAndAttach(root: string, target: number): Promise<void> {
+		const install = host.resolveInstall();
+		const launch = buildLaunch(app, install, target, root);
+		const launched = host.launchApp(launch.command, launch.args);
+
+		if (!(await waitForPort(target))) {
+			launched.close();
+			throw new Error(
+				`${app.label} did not open its control server on port ${target} within ${(READINESS_ATTEMPTS * READINESS_DELAY_MS) / 1000}s (close an instance you opened by hand and try again)`,
+			);
+		}
+
+		attach(install, target, root, launched);
+		host.notify(
+			`${app.label} MCP on: opened the app on port ${target}, confined to ${root}`,
+			"info",
+		);
+	}
+
+	function attachText(target: number): string {
+		return `${app.label} MCP on: attached to the app already listening on port ${target} (its automation roots were fixed when it started)`;
+	}
+
 	async function start(): Promise<void> {
 		if (starting) {
 			host.notify(`${app.label} is still starting; try again in a moment`, "warning");
+			return;
+		}
+
+		if (active) {
+			host.notify(`${app.label} MCP is already on (/${app.id}:off turns it off)`, "info");
 			return;
 		}
 
@@ -111,68 +177,117 @@ export function createController(host: CraftHost): CraftController {
 			const target = port;
 
 			if (await host.isListening(target)) {
-				register(host.resolveInstall(), target, root);
+				attach(host.resolveInstall(), target, root);
+				host.notify(attachText(target), "info");
 				return;
 			}
 
-			const install = host.resolveInstall();
-			const launch = buildLaunch(app, install, target, root);
-			const launched = host.launchApp(launch.command, launch.args);
-
-			if (!(await waitForPort(target))) {
-				launched.close();
-				throw new Error(
-					`${app.label} did not open its control server on port ${target} within ${(READINESS_ATTEMPTS * READINESS_DELAY_MS) / 1000}s (close an instance you opened by hand and try again)`,
-				);
-			}
-
-			register(install, target, root, launched);
+			await launchAndAttach(root, target);
 		} finally {
 			starting = false;
 		}
 	}
 
-	function stop(): string {
-		const current = active;
-		if (!current) return `${app.label} MCP was already off`;
-
-		try {
-			host.unregisterMcpServer(app.id);
-		} catch {
-			// Already released by session teardown.
+	/**
+	 * `/app:open` guarantees a running app on the configured port and root: it attaches to whatever
+	 * already answers there, and otherwise drops any stale registration and launches a new one.
+	 */
+	async function ensureRunning(): Promise<void> {
+		if (starting) {
+			host.notify(`${app.label} is still starting; try again in a moment`, "warning");
+			return;
 		}
 
-		active = undefined;
+		const root = resolveAutomationRoot(rootOverride, host.cwd);
+		const target = port;
+
+		if (await host.isListening(target)) {
+			if (active) {
+				host.notify(
+					`${app.label} is already up on port ${target} and registered; nothing to reopen (/${app.id}:sync reconciles it)`,
+					"info",
+				);
+				return;
+			}
+
+			attach(host.resolveInstall(), target, root);
+			host.notify(attachText(target), "info");
+			return;
+		}
+
+		release();
+		starting = true;
+		try {
+			await launchAndAttach(root, target);
+		} finally {
+			starting = false;
+		}
+	}
+
+	/**
+	 * `/app:sync` makes this session match reality: the registration follows the app that actually
+	 * answers, and a port nothing answers never keeps a server registered.
+	 */
+	async function resync(): Promise<void> {
+		if (starting) {
+			host.notify(`${app.label} is still starting; try again in a moment`, "warning");
+			return;
+		}
+
+		const target = port;
+
+		if (await host.isListening(target)) {
+			const current = active;
+			if (!current) {
+				attach(host.resolveInstall(), target, resolveAutomationRoot(rootOverride, host.cwd));
+				host.notify(
+					`${app.label} MCP reconnected: registered the app already listening on port ${target}`,
+					"info",
+				);
+				return;
+			}
+
+			attach(host.resolveInstall(), current.port, current.root, current.launched);
+			host.notify(
+				`${app.label} MCP is already in sync on port ${current.port}; the registration was refreshed`,
+				"info",
+			);
+			return;
+		}
+
+		if (release()) {
+			host.notify(
+				`${app.label} MCP released: it is not running on port ${target} any more, so this session is no longer attached (/${app.id}:open opens the app again)`,
+				"warning",
+			);
+			return;
+		}
+
+		host.notify(
+			`${app.label} is not running on port ${target} (/${app.id}:open opens the app confined to this folder)`,
+			"info",
+		);
+	}
+
+	function stop(): string {
+		const current = release();
+		if (!current) return `${app.label} MCP was already off`;
 
 		if (!current.launched) {
 			return `${app.label} MCP off; the app keeps running because we did not open it`;
 		}
 
-		current.launched.close();
 		return `${app.label} MCP off, and the app we opened was closed`;
 	}
 
-	function status(): string {
-		if (!active) return `${app.label} MCP is off (/${app.id} opens it confined to this folder)`;
-
-		return active.launched
-			? `${app.label} MCP is on: app opened on port ${active.port}, confined to ${active.root}`
-			: `${app.label} MCP is on: attached to the app on port ${active.port}`;
-	}
-
-	/** The menu label states the action, so `/app` never reads like a report of the current state. */
-	function describe(): string {
-		if (!active) return `Start ${app.label}: open the app confined to this folder and attach its MCP server`;
-
-		return active.launched
-			? `Stop ${app.label}: release its MCP server and close the app this session opened`
-			: `Stop ${app.label}: release its MCP server and leave the app you opened running`;
-	}
-
 	/** One line per fact: state, the settings the next start uses, and where the binaries are. */
-	function configText(): string {
+	function status(): string {
 		const lines = [
-			status(),
+			active
+				? active.launched
+					? `${app.label} MCP is on: app opened on port ${active.port}, confined to ${active.root}`
+					: `${app.label} MCP is on: attached to the app on port ${active.port}`
+				: `${app.label} MCP is off (/${app.id}:open opens it confined to this folder)`,
 			`Port ${port} · root ${resolveSessionRoot(rootOverride, host.cwd)}`,
 		];
 
@@ -186,20 +301,28 @@ export function createController(host: CraftHost): CraftController {
 		return lines.join("\n");
 	}
 
-	function setRoot(parameters: string[]): void {
-		if (parameters.length === 0) {
-			host.notify(`Automation root: ${resolveSessionRoot(rootOverride, host.cwd)}`, "info");
+	/** The menu label states the action, so `/app` never reads like a report of the current state. */
+	function describe(): string {
+		if (!active) return `Start ${app.label}: open the app confined to this folder and attach its MCP server`;
+
+		return active.launched
+			? `Stop ${app.label}: release its MCP server and close the app this session opened`
+			: `Stop ${app.label}: release its MCP server and leave the app you opened running`;
+	}
+
+	function setRoot(argument: string | undefined): void {
+		if (argument === undefined) {
+			host.notify(`Usage: /${app.id}:root <dir>`, "warning");
 			return;
 		}
 
 		if (active) {
-			host.notify(`${app.label} was fixed when it started: turn it off (/${app.id} off) before changing the root`, "error");
+			host.notify(`${app.label} was fixed when it started: turn it off (/${app.id}:off) before changing the root`, "error");
 			return;
 		}
 
-		const next = parameters.join(" ");
 		const previous = rootOverride;
-		rootOverride = next;
+		rootOverride = argument;
 
 		try {
 			resolveAutomationRoot(rootOverride, host.cwd);
@@ -213,12 +336,12 @@ export function createController(host: CraftHost): CraftController {
 
 	function setPort(argument: string | undefined): void {
 		if (argument === undefined) {
-			host.notify(`App port: ${port}`, "info");
+			host.notify(`Usage: /${app.id}:port <n>`, "warning");
 			return;
 		}
 
 		if (active) {
-			host.notify(`${app.label} was fixed when it started: turn it off (/${app.id} off) before changing the port`, "error");
+			host.notify(`${app.label} was fixed when it started: turn it off (/${app.id}:off) before changing the port`, "error");
 			return;
 		}
 
@@ -226,61 +349,39 @@ export function createController(host: CraftHost): CraftController {
 		host.notify(`App port set to ${port}`, "info");
 	}
 
-	async function handle(args: string): Promise<void> {
-		const [verb, ...rest] = args.trim().split(/\s+/).filter(Boolean);
-
+	/** Every operation reports through `host.notify`, so a failure is a message, never a throw. */
+	async function guard(operation: () => Promise<void> | void): Promise<void> {
 		try {
-			switch (verb) {
-				case undefined:
-					if (active) {
-						host.notify(stop(), "info");
-						return;
-					}
-					await start();
-					return;
-
-				case "on":
-					if (active) {
-						host.notify(`${app.label} MCP is already on (/${app.id} off turns it off)`, "info");
-						return;
-					}
-					await start();
-					return;
-
-				case "off":
-					host.notify(stop(), "info");
-					return;
-
-				case "config":
-					if (rest.length === 0) {
-						host.notify(configText(), "info");
-						return;
-					}
-					switch (rest[0]) {
-						case "root":
-							setRoot(rest.slice(1));
-							return;
-						case "port":
-							setPort(rest[1]);
-							return;
-						default:
-							host.notify(`Usage: /${app.id} config [root <dir> | port <n>]`, "warning");
-					}
-					return;
-
-				default:
-					host.notify(usage, "warning");
-			}
+			await operation();
 		} catch (error) {
 			host.notify(errorMessage(error), "error");
 		}
 	}
 
 	return {
-		handle,
-		shutdown: () => void stop(),
+		handle: (args) =>
+			guard(async () => {
+				if (args.trim()) {
+					host.notify(usage, "warning");
+					return;
+				}
+
+				if (active) {
+					host.notify(stop(), "info");
+					return;
+				}
+
+				await start();
+			}),
+		start: () => guard(() => start()),
+		off: () => guard(() => void host.notify(stop(), "info")),
+		ensureRunning: () => guard(() => ensureRunning()),
+		resync: () => guard(() => resync()),
+		setRoot: (argument) => guard(() => setRoot(argument)),
+		setPort: (argument) => guard(() => setPort(argument)),
 		status,
 		describe,
+		shutdown: () => void stop(),
 	};
 }
 
