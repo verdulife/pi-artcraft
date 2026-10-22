@@ -71,7 +71,7 @@ export function createController(host: CraftHost): CraftController {
 	let port = app.defaultPort;
 	let starting = false;
 
-	const usage = `Usage: /${app.id} [on | off | status | root <dir> | port <n>] — no argument toggles`;
+	const usage = `Usage: /${app.id} [on | off | config [root <dir> | port <n>]] — no argument toggles`;
 
 	function register(install: AppInstall, target: number, root: string, launched?: CraftApp): void {
 		try {
@@ -169,6 +169,23 @@ export function createController(host: CraftHost): CraftController {
 			: `Stop ${app.label}: release its MCP server and leave the app you opened running`;
 	}
 
+	/** One line per fact: state, the settings the next start uses, and where the binaries are. */
+	function configText(): string {
+		const lines = [
+			status(),
+			`Port ${port} · root ${resolveSessionRoot(rootOverride, host.cwd)}`,
+		];
+
+		try {
+			const install = host.resolveInstall();
+			lines.push(`App ${install.app}`, `CLI ${install.cli}`);
+		} catch (error) {
+			lines.push(errorMessage(error).split("\n")[0] ?? "app not found");
+		}
+
+		return lines.join("\n");
+	}
+
 	function setRoot(parameters: string[]): void {
 		if (parameters.length === 0) {
 			host.notify(`Automation root: ${resolveSessionRoot(rootOverride, host.cwd)}`, "info");
@@ -234,16 +251,21 @@ export function createController(host: CraftHost): CraftController {
 					host.notify(stop(), "info");
 					return;
 
-				case "status":
-					host.notify(status(), "info");
-					return;
-
-				case "root":
-					setRoot(rest);
-					return;
-
-				case "port":
-					setPort(rest[0]);
+				case "config":
+					if (rest.length === 0) {
+						host.notify(configText(), "info");
+						return;
+					}
+					switch (rest[0]) {
+						case "root":
+							setRoot(rest.slice(1));
+							return;
+						case "port":
+							setPort(rest[1]);
+							return;
+						default:
+							host.notify(`Usage: /${app.id} config [root <dir> | port <n>]`, "warning");
+					}
 					return;
 
 				default:

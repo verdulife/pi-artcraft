@@ -22,7 +22,7 @@ export const RULES_SECTION = "artcraft";
 
 const GUI = "ArtCraft suite (FigCraft, VectorCraft)";
 
-const VERBS = ["on", "off", "status", "root", "port"];
+const VERBS = ["on", "off", "config"];
 
 const GUIDELINE =
 	`${GUI}: draw only through the MCP tools of the live app opened by /figcraft or /vectorcraft; ` +

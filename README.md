@@ -23,9 +23,9 @@ npm is not published yet; the package is ready for `npm publish` when it is.
 | `/figcraft` | Toggle: off opens the app confined to `cwd` and attaches its MCP server; on releases both |
 | `/vectorcraft` | Same for VectorCraft |
 | `/<app> on` · `/<app> off` | Explicit forms of the toggle |
-| `/<app> status` | Whether the app and its MCP server are on, and for which folder |
-| `/<app> root <dir>` | Automation root for the next start (refused while the app is on) |
-| `/<app> port <n>` | Control port for the next start (refused while the app is on) |
+| `/<app> config` | State, port, root and the two binaries in use |
+| `/<app> config root <dir>` | Automation root for the next start (refused while the app is on) |
+| `/<app> config port <n>` | Control port for the next start (refused while the app is on) |
 
 The menu label states the action, not the state: `Start FigCraft: open the app confined to this
 folder and attach its MCP server` while it is off, `Stop FigCraft: …` while it is on. The label is

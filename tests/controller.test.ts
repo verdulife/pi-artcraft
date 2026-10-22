@@ -208,12 +208,12 @@ describe("per-app controller toggle", () => {
 		const controller = createController(fake.host);
 		const root = mkdtempSync(join(tmpdir(), "artcraft-root-"));
 
-		await controller.handle(`root ${root}`);
+		await controller.handle(`config root ${root}`);
 		await controller.handle("");
 
 		expect(fake.launched[0]?.args).toContain(root);
 
-		await controller.handle(`root ${mkdtempSync(join(tmpdir(), "artcraft-other-"))}`);
+		await controller.handle(`config root ${mkdtempSync(join(tmpdir(), "artcraft-other-"))}`);
 
 		expect(fake.notifications.at(-1)?.type).toBe("error");
 		expect(lastMessage(fake)).toContain("was fixed when it started");
@@ -223,23 +223,59 @@ describe("per-app controller toggle", () => {
 		const fake = fakeHost();
 		const controller = createController(fake.host);
 
-		await controller.handle("port 70000");
+		await controller.handle("config port 70000");
 
 		expect(fake.notifications.at(-1)?.type).toBe("error");
 		expect(lastMessage(fake)).toContain("between 1 and 65535");
 		expect(fake.launched).toHaveLength(0);
 
 		await controller.handle("");
-		await controller.handle("port 7999");
+		await controller.handle("config port 7999");
 
 		expect(lastMessage(fake)).toContain("was fixed when it started");
 
 		await controller.handle("off");
-		await controller.handle("port 7999");
+		await controller.handle("config port 7999");
 		await controller.handle("");
 
 		expect(fake.launched[1]?.args).toContain("7999");
 		expect(fake.registered[1]?.args).toEqual(["mcp", "--attach", "7999"]);
+	});
+
+	test("config alone reports state, settings and the binaries in use", async () => {
+		const fake = fakeHost();
+		const controller = createController(fake.host);
+
+		await controller.handle("config");
+
+		const message = lastMessage(fake);
+		expect(message).toContain("is off");
+		expect(message).toContain("Port 7980");
+		expect(message).toContain(`root ${fake.host.cwd}`);
+		expect(message).toContain(INSTALL.app);
+		expect(message).toContain(INSTALL.cli);
+		expect(fake.registered).toHaveLength(0);
+	});
+
+	test("config still reports settings when the app is not installed", async () => {
+		const fake = fakeHost({ missing: true });
+		const controller = createController(fake.host);
+
+		await controller.handle("config");
+
+		expect(lastMessage(fake)).toContain("Port 7980");
+		expect(lastMessage(fake)).toContain("not found");
+		expect(fake.notifications.at(-1)?.type).toBe("info");
+	});
+
+	test("an unknown config key prints its own usage", async () => {
+		const fake = fakeHost();
+		const controller = createController(fake.host);
+
+		await controller.handle("config nope");
+
+		expect(lastMessage(fake)).toContain("Usage: /figcraft config");
+		expect(fake.notifications.at(-1)?.type).toBe("warning");
 	});
 
 	test("an unknown verb prints the usage lines and changes nothing", async () => {
