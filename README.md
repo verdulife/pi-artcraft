@@ -54,6 +54,23 @@ this order:
 
 When something is missing the error names the environment variables and every path it tried.
 
+Set the overrides from your own shell:
+
+```nu
+# nushell
+$env.CRAFT_FIGCRAFT_APP = "C:/Program Files/FigCraft/figcraft.exe"
+```
+
+```powershell
+# PowerShell
+$env:CRAFT_FIGCRAFT_APP = "C:\Program Files\FigCraft\figcraft.exe"
+```
+
+```bash
+# bash / zsh
+export CRAFT_FIGCRAFT_APP="/Applications/FigCraft.app/Contents/MacOS/figcraft"
+```
+
 ## Operating rules this package publishes
 
 A Pi package can carry instructions, not just code. On every model call the extension appends this
