@@ -1,0 +1,22 @@
+{
+	"name": "pi-artcraft",
+	"version": "0.1.0",
+	"description": "Pi package for the ArtCraft suite: toggle FigCraft and VectorCraft per session, each with a control server confined to the project folder and its MCP server attached.",
+	"keywords": ["pi-package", "figcraft", "vectorcraft", "artcraft", "mcp"],
+	"license": "MIT",
+	"author": "Verdu",
+	"type": "module",
+	"pi": {
+		"extensions": ["./src/extension.ts"]
+	},
+	"files": ["src", "README.md", "LICENSE"],
+	"scripts": {
+		"test": "bun test"
+	},
+	"engines": {
+		"bun": ">=1.1.0"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	}
+}
