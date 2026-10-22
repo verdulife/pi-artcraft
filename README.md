@@ -15,7 +15,7 @@ project.
 ## Install
 
 ```bash
-pi install git:github.com/verdulife/pi-artcraft@v0.2.0
+pi install git:github.com/verdulife/pi-artcraft@v0.3.0
 ```
 
 npm is not published yet; the package is ready for `npm publish` when it is.

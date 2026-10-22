@@ -1,6 +1,6 @@
 {
 	"name": "pi-artcraft",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "Pi package for the ArtCraft suite: toggle FigCraft and VectorCraft per session, each with a control server confined to the project folder and its MCP server attached.",
 	"keywords": ["pi-package", "figcraft", "vectorcraft", "artcraft", "mcp"],
 	"license": "MIT",
