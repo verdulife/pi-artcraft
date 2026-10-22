@@ -5,6 +5,14 @@
 	"keywords": ["pi-package", "figcraft", "vectorcraft", "artcraft", "mcp"],
 	"license": "MIT",
 	"author": "Verdu",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/verdulife/pi-artcraft.git"
+	},
+	"homepage": "https://github.com/verdulife/pi-artcraft#readme",
+	"bugs": {
+		"url": "https://github.com/verdulife/pi-artcraft/issues"
+	},
 	"type": "module",
 	"pi": {
 		"extensions": ["./src/extension.ts"]
